@@ -1,5 +1,4 @@
-# drupal-do-api
-Drupal 7 module for DigitalOcean API
+# Drupal 7 module for DigitalOcean API
 
 Stores tokens for DigitalOcean API in your Drupal database.
 

@@ -10,6 +10,6 @@ copy `doapi` folder into `sites/all/modules` (or other place where you put modul
 
 The `doapi_dns`subfolder in `doapi` contains the module for DNS management (add domain to DigitalOcean nameservers, add, edit, delete DNS records of a domain).
 
-Leave comments at http://andrey.ws/?p=188
+Leave comments here: http://andrey.ws/?p=188
 
 

@@ -1,0 +1,602 @@
+<?php
+/**
+ * @file
+ * Module file for doapi_dns.
+ */
+
+define('DOAPI_DNS_URL', 'https://api.digitalocean.com/v2/domains');
+
+/**
+ * Implementation of hook_menu().
+ */
+function doapi_dns_menu() {
+  $items['doapi/dns'] = array(
+    'title' => 'DNS API',
+    'page callback' => 'doapi_dns_about',
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_NORMAL_ITEM,
+    'tab_parent' => 'doapi',
+    'expanded' => TRUE,
+  );
+  $items['doapi/dns/list'] = array(
+    'title' => 'Get domain list',
+    'page callback' => 'doapi_dns_list_domains',
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_LOCAL_TASK,
+  );
+  $items['doapi/dns/add'] = array(
+    'title' => 'Add new domain',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('doapi_dns_add_domain'),
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_LOCAL_TASK,
+    'tab_parent' => 'doapi/dns',
+  );
+  $items['doapi/dns/modify'] = array(
+    'page callback' => 'drupal_get_form',
+    'title callback' => 'doapi_dns_modify_domain_title',
+    'page arguments' => array('doapi_dns_modify_domain', 3),
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_CALLBACK,
+  );
+  $items['doapi/dns/delete'] = array(
+    'page callback' => 'drupal_get_form',
+    'page title' => 'Remove domain form DO DNS',
+    'page arguments' => array('doapi_dns_delete_domain', 3),
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_LOCAL_TASK,
+    'tab_parent' => 'doapi/dns/list',
+  );
+  $items['doapi/dns/template'] = array(
+    'title' => 'Domain default template',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('doapi_dns_template'),
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_LOCAL_TASK,
+  );
+  return $items;
+}
+
+/**
+ * Initial page of a module.
+ */
+function doapi_dns_about() {
+  $block = module_invoke('doapi_dns', 'block_view', 'doapi_dns_block_search');
+  $out = render($block['content'])
+    . '<div>' 
+    .  check_plain( 'You could consider to place "DO API DNS search" block into any place.' )
+    . '</div>';
+  return $out;
+}
+
+/**
+ * Search form for domains available for a given DO API token.
+ */
+function doapi_dns_search_domain($form, &$form_state) {
+  $form['token'] = doapi_token_select();
+  $form['domain'] = array(
+    '#type' => 'textfield',
+    '#title' => 'Search domain',
+    '#type' => 'textfield',
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+  );
+  return $form;
+}
+
+/**
+ * Validation of doapi_dns_search_domain() input.
+ */
+function doapi_dns_search_domain_validate($form, &$form_state) {
+  if (!preg_match('/^[a-z0-9\.-]+$/i', trim($form_state['values']['domain']))) {
+    form_set_error('domain', t('Invalid domain format.'));
+  }
+}
+
+/**
+ * Submit of doapi_dns_search_domain(),
+ * redirects to a domain entries editor.
+ */
+function doapi_dns_search_domain_submit($form, &$form_state) {
+  drupal_goto('doapi/dns/modify/' . $form_state['values']['domain']);
+}
+
+/**
+ * Display, edit, add, delete domain records.
+ */
+function doapi_dns_modify_domain($form, &$form_state, $domain) {
+  if ($domain && ($token = doapi_token_value())) {
+    $options['method'] = 'GET';
+    $options['headers']['Authorization'] = 'Bearer ' . $token;
+    $options['headers']['Content-Type'] = 'application/json';
+
+    $response = drupal_http_request(DOAPI_DNS_URL . "/$domain/records", $options);
+    if (!doapi_response_error($response)) {
+     $data = json_decode($response->data);
+      $form['domain'] = array(
+        '#type' => 'hidden',
+        '#default_value' => arg(3),
+      );
+      $form['token'] = doapi_token_select();
+      $count = 0;
+      foreach ($data->domain_records as $r) {
+        $id = $r->id;
+        $rid = "r-$id";
+        $form[$rid] = array(
+          '#type' => 'fieldset',
+          '#tree' => TRUE,
+          '#attributes' => array('class' => array('container-inline minified')),
+          '#weight' => (++$count)*10,
+          '#suffix' => '<div class="doapi-ajax-response" id="ajax-' . $rid . '"></div>',
+          );
+        $form[$rid]['name'] = array(
+          '#type' => 'textfield',
+          '#default_value' => $r->name,
+          '#size' => 30,
+        );
+        $form[$rid]['type'] = array(
+          '#markup' => '<span class="w80">' . $r->type
+            .(empty($r->priority) ? '' : ' ' . $r->priority)
+            . '</span>',
+        );
+        $form[$rid]['data'] = array(
+          '#type' => 'textfield',
+          '#default_value' => $r->data,
+          '#size' => 20,
+          '#maxlength' => 2500,
+        );
+        $form[$rid]['ok'] = array(
+          '#type' => 'button',
+          '#value' => 'ok',
+          '#name' => "update-$id",
+          '#ajax' => array(
+            'callback' => 'doapi_dns_ajax_callback',
+            'wrapper' => 'ajax-' . $rid,
+            'method' => 'html',
+            'effect' => 'fade',
+            'progress' => array('message' => '', 'type' => 'throbber',),
+          ),
+        );
+        $form[$rid]['delete'] = array(
+          '#type' => 'button',
+          '#value' => 'X',
+          '#name' => "delete-$id",
+          '#ajax' => array(
+            'callback' => 'doapi_dns_ajax_callback',
+            'wrapper' => 'ajax-' . $rid,
+            'method' => 'html',
+            'effect' => 'fade',
+            'progress' => array('message' => '', 'type' => 'throbber',),
+          ),
+        );
+      }
+      $form['new'] = array(
+        '#type' => 'fieldset',
+        '#tree' => TRUE,
+        '#attributes' => array('class' => array('container-inline minified')),
+        '#weight' => (++$count)*10,
+        '#suffix' => '<div class="doapi-ajax-response" id="ajax-new"></div>',
+      );
+      $form['new']['text'] = array(
+        '#markup' => '<h3>' . t('Add new record') . '</h3>',
+      );
+      $form['new']['name'] = array(
+        '#type' => 'textfield',
+        '#size' => 30,
+      );
+      $form['new']['type'] = array(
+        '#type' => 'select',
+        '#options' => array(
+          'A' => 'A', 'CNAME' => 'CNAME', 'AAAA' => 'AAAA', 'MX' => 'MX',
+          'NS' => 'NS', 'TXT' => 'TXT', 'SRV' => 'SRV',
+       ),
+     );
+      $form['new']['data'] = array(
+        '#type' => 'textfield',
+        '#size' => 20,
+        '#maxlength' => 2500,
+      );
+      $form['new']['priority'] = array(
+        '#type' => 'textfield',
+        '#size' => 5,
+        '#attributes' => array('placeholder' => 'priority'),
+        '#maxlength' => 5,
+        '#states' => array(
+          'visible' =>
+            array('select[name="new[type]"]' =>
+              array(
+                array('value' => 'MX'),
+                array('value' => 'SRV')
+              )
+            )
+          )
+      );
+      $form['new']['port'] = array(
+        '#type' => 'textfield',
+        '#size' => 5,
+        '#attributes' => array('placeholder' => 'port'),
+        '#maxlength' => 5,
+        '#states' => array(
+          'visible' =>
+            array('select[name="new[type]"]' =>
+              array('value' => 'SRV')
+            )
+          )
+      );
+      $form['new']['weight'] = array(
+        '#type' => 'textfield',
+        '#size' => 5,
+        '#attributes' => array('placeholder' => 'weight'),
+        '#maxlength' => 5,
+        '#states' => array(
+          'visible' =>
+            array('select[name="new[type]"]' =>
+              array('value' => 'SRV')
+            )
+          )
+      );
+      $form['new']['ok'] = array(
+        '#type' => 'button',
+        '#value' => 'ok',
+        '#name' => 'new-record',
+        '#ajax' => array(
+          'callback' => 'doapi_dns_ajax_callback',
+          'wrapper' => 'ajax-new',
+          'method' => 'html',
+          'effect' => 'fade',
+          'speed' => 'slow',
+          'progress' => array('message' => '', 'type' => 'throbber',),
+        ),
+      );
+      $form['#attached']['js'] = array(
+        drupal_get_path('module', 'doapi') . '/doapi.js',
+      );
+    }
+  }
+  return $form;
+}
+
+/**
+ * Attempt to edit, add, delete dns record and display the result.
+ */
+function doapi_dns_ajax_callback($form, $form_state) {
+  if (user_access('digitalocean doapi')) {
+    $record = explode('-', $form_state['triggering_element']['#name']);
+    $token = doapi_token_value($form_state['values']['token']);
+    $domain = $form_state['values']['domain'];
+
+    switch ($record[0]) {
+      case 'update';
+        $options['method'] = 'PUT';
+        $post = $form_state['values']['r-' .  $record[1]];
+        unset($post['ok']);
+        unset($post['delete']);
+        $options['data'] = json_encode($post);
+        $url = DOAPI_DNS_URL . "/$domain/records/$record[1]";
+        break;
+      case 'delete';
+        $options['method'] = 'DELETE';
+        $url = DOAPI_DNS_URL . "/$domain/records/$record[1]";
+        break;
+      case 'new';
+        $options['method'] = 'POST';
+        $url = DOAPI_DNS_URL . "/$domain/records";
+        $post = $form_state['values']['new'];
+        unset($post['ok']);
+        unset($post['delete']);
+        $options['data'] = json_encode($post);
+        break;
+    }
+
+    $options['headers']['Authorization'] = 'Bearer ' . $token;
+    $options['headers']['Content-Type'] = 'application/json';
+
+    $response = drupal_http_request($url, $options);
+    $data = json_decode($response->data);
+
+    return '<div>' . $response->code . ' - ' . $response->status_message 
+      . (empty($data->message) ? '' : (': ' . $data->message))
+      . '<span class="ajax-hide-response" onclick="doapi_hide_ajax_response()">Х</span></div>';
+  }
+}
+
+/**
+ * Title callback for DNS records page.
+ */
+function doapi_dns_modify_domain_title() {
+  return t('DNS records for @d', array('@d' => arg(3))); 
+}
+
+/**
+ * Returns an array of default DNS template.
+ */
+function doapi_dns_initial_template() {
+  $out['default-a'] = array('name' => '%domain', 'type' => 'A', 'data' => '127.0.0.1');
+  $out['default-www'] = array('name' => 'www', 'type' => 'CNAME', 'data' => '%domain.');
+  $out['default-mx'] = array('name' => '%domain.', 'type' => 'MX', 'data' => '%domain.', 'priority' => 10);
+  $out['default-txt'] = array('name' => '%domain.', 'type' => 'TXT', 'data' => '"v=spf1 a mx ~all"');
+  $out['default-ns1'] = array('name' => '%domain.', 'type' => 'NS', 'data' => 'ns1.digitalocean.com.');
+  $out['default-ns2'] = array('name' => '%domain.', 'type' => 'NS', 'data' => 'ns2.digitalocean.com.');
+  $out['default-ns3'] = array('name' => '%domain.', 'type' => 'NS', 'data' => 'ns3.digitalocean.com.');
+  return $out;
+}
+
+/**
+ * Form to edit your default DNS template.
+ */
+function doapi_dns_template($form, &$form_state) {
+  $doapi_dns_template = variable_get('doapi_dns_template', doapi_dns_initial_template());
+  foreach ($doapi_dns_template as $key => $line) {
+    $form[$key] = array(
+      '#type' => 'fieldset',
+      '#attributes' => array('class' => array('container-inline minified clearfix')), 
+      '#tree' => TRUE ,
+    );
+    $form[$key]['name'] = array(
+      '#type' => 'textfield',
+      '#default_value' => $line['name'],
+      '#size' => 30,
+    );
+    $form[$key]['type'] = array(
+      '#type' => 'select',
+      '#options' => array(
+        '' => '- type -', 'A' => 'A', 'CNAME' => 'CNAME', 'MX' => 'MX',
+        'NS' => 'NS', 'TXT' => 'TXT', 'AAAA' => 'AAAA', 'SRV' => 'SRV',
+       ),
+       '#default_value' => $line['type'],
+     );
+     $form[$key]['data'] = array(
+       '#type' => 'textfield',
+       '#default_value' => $line['data'],
+       '#size' => 20,
+    );
+  }
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#submit' => array('doapi_dns_template_submit'),
+    '#prefix' => '<br>',
+    '#value' => t('Submit'),
+  );
+  return $form;
+}
+
+/**
+ * Submit for doapi_dns_template() form.
+ */
+function doapi_dns_template_submit($form, &$form_state) {
+  $new_lines = array();
+  foreach ($form_state['values'] as $key => $line) {
+    if (is_array($line) && !empty($line['type'])) {
+      $new_lines[$key] = $line;
+    }
+  }
+  variable_set('doapi_dns_template', $new_lines);
+}
+
+/**
+ * Asks DO for a list of domains available for a given API access token
+ * and displays result as a table, with a pagination.
+ */
+function doapi_dns_list_domains() {
+  $token = doapi_token_value();
+  if (!$token) {
+    return 'Token undefined.';
+  }
+  $out = doapi_token_render_select_form();
+  $page = empty($_GET['page']) ? 1 : $_GET['page'];
+  $options['method'] = 'GET';
+  $options['headers']['Authorization'] = 'Bearer ' . $token;
+  $options['headers']['Content-Type'] = 'application/json';
+  $response = drupal_http_request(DOAPI_DNS_URL . "?page=$page", $options);
+
+  if (!doapi_response_error($response)) {
+    $data = json_decode($response->data);
+    $items =  array();
+    foreach ($data->domains as $domain) {
+
+     preg_match("/^.+?IN A (.+?)$/m", $domain->zone_file, $match)
+       || preg_match("/^.+?IN SOA (\S+).*?$/m", $domain->zone_file, $match);
+
+      $items[$domain->name] = array(
+        l($domain->name, 'doapi/dns/modify/' . $domain->name),
+        $match[1],
+        l(t('delete'), 'doapi/dns/delete/' . $domain->name),
+      );
+    }
+
+    $pages['link-0'] = t('@num domains total.',  array('@num' => $data->meta->total));
+
+    if (isset($data->links) && isset($data->links->pages)) {
+      $n = 0;
+      $pages['link-0'] .= ' ' . t('Pages:');
+      foreach ($data->links->pages as $name => $p) {
+        $query = parse_url($p, PHP_URL_QUERY);
+        parse_str($_SERVER['QUERY_STRING'], $current);
+        parse_str($query, $new);
+        $pages['link-' . (++$n)] = l($name, 'doapi/dns/list', array('query' => array_merge($current, $new)));
+      }
+    }
+    $out .= theme_item_list(array(
+      'items' => $pages,
+      'type' => 'ul',
+      'title' => '',
+      'attributes' => array('class' => 'ul-inline'),
+    ));
+    $out .= theme_table(array(
+      'rows' =>  $items,
+      'attributes' => array(),
+      'header' => array(),
+      'colgroups' => array(),
+      'sticky' => FALSE,
+      'caption' => '',
+      'empty' => 'No domains.',
+    ));
+  }
+  return $out;
+}
+
+/**
+ * Form for adding new domain.
+ */
+function doapi_dns_add_domain($form, &$form_state) {
+  $form['token'] = doapi_token_select();
+  $template = variable_get('doapi_dns_template', doapi_dns_initial_template());
+  $form['name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Domain name'),
+    '#required' => TRUE,
+    '#attributes' => array('placeholder' => 'example.com'),
+  );
+  $form['ip_address'] = array(
+    '#type' => 'textfield',
+    '#title' => t('IP address'),
+    '#required' => TRUE,
+    '#attributes' => array('placeholder' => '101.101.101.101'),
+    '#default_value' => empty($template['default-a']) ? '' : $template['default-a']['data'],
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#submit' => array('doapi_dns_add_domain_submit'),
+    '#value' => 'Submit',
+  );
+  return $form;
+}
+
+/**
+ * Validation of doapi_dns_add_domain() form input.
+ */
+function doapi_dns_add_domain_validate($form, &$form_state) {
+  if (!preg_match('/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/', $form_state['values']['ip_address'])) {
+    form_set_error('ip_address', 'Incorrect IP address format');
+  }
+  if (!preg_match('/^[a-z0-9-\.]+$/', $form_state['values']['name'])) {
+    form_set_error('name', 'Invalid domain name format');
+  }
+}
+
+/**
+ * Submit doapi_dns_add_domain() form.
+ * 
+ * Sends request to api.digitalocean.com
+ * and redirects to the DNS records editor.
+ */
+function doapi_dns_add_domain_submit($form, &$form_state) {
+  $token = doapi_token_value($form_state['values']['token']);
+  $domain = strtolower(trim($form_state['values']['name']));
+  $options['method'] = 'POST';
+  $options['headers']['Authorization'] = 'Bearer ' . $token;
+  $options['headers']['Content-Type'] = 'application/json';
+  $options['data'] = json_encode(array(
+      'name' => $domain,
+      'ip_address' => $form_state['values']['ip_address'],
+    )
+  );
+  $response = drupal_http_request(DOAPI_DNS_URL, $options);
+  if (!doapi_response_error($response)) {
+    drupal_set_message($response->code . ' -- ' . $response->status_message);
+    drupal_set_message(t('Domain %name has been added.', array('%name' => $form_state['values']['name'])));
+// Then we'll add default dns records
+    $template = variable_get('doapi_dns_template', doapi_dns_initial_template());
+    foreach ($template as $key => $line) {
+      if ($key == 'default-a') {
+        continue;
+      }
+      $line['name'] = str_replace('%domain', $domain, $line['name']);
+      $line['data'] = str_replace('%domain', $domain, $line['data']);
+
+      if ($line['type'] == 'MX' && empty($line['priority'])) {
+        $line['priority'] = 10;
+      }
+      if ($line['type'] == 'NS') {
+// to do: handle !preg_match('/ns[0-9]\.digitalocean\.com/', $line['value'])
+      }
+      $options['data'] = json_encode($line);
+      $response = drupal_http_request(DOAPI_DNS_URL . "/$domain/records", $options);
+    }
+// To do: if no one of ns1,2,3.digitalocean.com, delete them.
+    drupal_goto('doapi/dns/modify/' . $domain);
+  }
+}
+
+/**
+ * Form to delete a domain from DO nameservers.
+ */
+function doapi_dns_delete_domain($form, &$form_state, $domain) {
+  $form['doapi_token'] = doapi_token_select();
+  $form[] = array(
+    '#markup' => '<p>' . t('Confirm delete domain %d?', array('%d' => $domain)) .'</p>',
+  );
+  $form['confirm'] = array(
+    '#type' => 'submit',
+    '#value' => t('Confirm'),
+    '#submit' => array('doapi_dns_delete_domain_submit'),
+  );
+  return $form;
+}
+
+/**
+ * Delete a domain from DO nameservers.
+ * See doapi_dns_delete_domain().
+ */
+function doapi_dns_delete_domain_submit($form, &$form_state) {
+  $token = doapi_token_value($form_state['values']['doapi_token']);
+  $options['method'] = 'DELETE';
+  $options['headers']['Authorization'] = 'Bearer ' . $token;
+  $options['headers']['Content-Type'] = 'application/json';
+  $response = drupal_http_request(DOAPI_DNS_URL . '/' . arg(3), $options);
+  if (!doapi_response_error($response)) {
+    drupal_set_message(t('Domain %name has been removed form DO.', array('%name' =>  arg(3))));
+    drupal_goto('doapi/dns');
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ *
+ * Provides a block displaying domain search form.
+ */
+function doapi_dns_block_info() {
+  $blocks['doapi_dns_block_search'] = array(
+    'info' => t('DO API DNS Search form'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function doapi_dns_block_view($delta = '') {
+  static $viewed;
+  $block = array();
+  if (!$viewed && user_access('digitalocean api')) {
+    $viewed = TRUE;
+    switch ($delta) {
+      case 'doapi_dns_block_search':
+        $block['subject'] = t('DO API DNS search');
+        $form = drupal_get_form('doapi_dns_search_domain');
+        $block['content'] = render($form)
+          . '<p>' . l(t('Add new domain'), 'doapi/dns/add') . '</p>';
+        break;
+    }
+  }
+  return $block;
+}
+
+/**
+ * Implements hook_help().
+ */
+function doapi_dns_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#doapi_dns':
+     $out = '<h3>' . t('About') . '</h3>';
+     $out .= '<p>' . t('Manage domains on DigitalOcean nameservers.') . '</p>';
+     $out .= '<p>' . t('Functionality: list domains available for a given API token, add new domain, domain template, add, edit, delete DNS entries.') . '</p>';
+
+     $out .= '<p><a href="https://developers.digitalocean.com/documentation/v2/" target="_blank">'
+       . t('DNS API documentation') . '</a></p>';
+    return $out;
+  }
+}

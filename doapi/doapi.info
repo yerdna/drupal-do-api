@@ -1,0 +1,9 @@
+name = DigitalOcean API
+description = Stores tokens for DigitalOcean API in your Drupal database. With the DO API DNS submodule provides the ability to manage domain records for domains served on DigitalOcean nameservers.
+core = 7.x
+package = custom
+files[] = doapi.module
+stylesheets[all][] = doapi.css
+configure = doapi
+
+version = "7.x-1.x"

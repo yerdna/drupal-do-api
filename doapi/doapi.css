@@ -1,0 +1,17 @@
+fieldset.container-inline.minified {margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; border: none;}
+fieldset.container-inline.minified .fieldset-wrapper {padding: 0!important; margin-top: 8px; margin-bottom: 8px;}
+ul.ul-inline {padding: 0 !important; list-style: none; display: inline-block;}
+ul.ul-inline li {display: inline-block;}
+
+/* dns */
+span.w80 {display: inline-block; width: 80px;}
+.ajax-progress {z-index: 100; background: #ccc;}
+
+.ajax-progress-throbber {z-index: 100; position: absolute;}
+.doapi-ajax-response div {z-index: 100; width: 100%; text-align: center;
+	position: absolute; color: #606; line-height: 30px; background: #fff; border: solid 1px #acf;}
+
+.ajax-hide-response {float: right; width: 24px; line-height: 30px; font-weight: bold; cursor: pointer;}
+
+form#doapi-dns-search-domain input[type="text"] {max-width: 100%;}
+

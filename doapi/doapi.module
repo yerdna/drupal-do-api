@@ -1,0 +1,354 @@
+<?php
+/**
+ * @file
+ * Module file for doapi.
+ */
+
+/**
+ * Implements hook_menu().
+ *
+ * Provides a page with a list of current tokens and a form
+ * to add new token.
+ */
+function doapi_menu() {
+  $items['doapi'] = array(
+    'title' => 'DigitalOcean API tokens',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('doapi_settings'),
+    'access arguments' => array('digitalocean api'),
+    'type' => MENU_NORMAL_ITEM,
+    'menu_name' => 'navigation',
+    'expanded' => TRUE,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function doapi_permission() {
+  $item['digitalocean api'] = array(
+    'title' => 'Use DigitalOcean API',
+    'restrict access' => TRUE,
+  );
+  return $item;
+}
+
+/**
+ * Implements hook_help().
+ */
+function doapi_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#doapi':
+     $out = '<h3>' . t('About') . '</h3>';
+     $out .= '<p>' . t('This module stores tokens of DigitalOcean API in your Drupal database.') . '</p>';
+     $out .= '<ul>';
+
+     $out .= '<li>' . t('Generate a token to access API in you !s.',
+       array('!s' => l(t('DigitalOcean account'), 'https://cloud.digitalocean.com/settings/applications')))
+       . '</li>';
+     $out .= '<li>' . t('Save this token on !s.', array('!s' => l('your Drupal site', 'doapi'))) . '</li>';
+     $out .= '</ul>';
+     $out .= '<p>' . t('The DNS API submodule uses these tokens to manage DNS entries of your domains on DigitalOcean nameservers.') . '</p>';
+     $out .= '<p>' . t('Other submodules (for droplets and image API) can be added in future.')
+       . ' <a href="https://developers.digitalocean.com/documentation/v2/" target="_blank">' . t('API documentation') . '</a>.</p>';
+    return $out;
+  }
+}
+
+/**
+ * List DO tokens and save new tokens locally.
+ */
+function doapi_settings($form, &$form_state) {
+  $tokens = variable_get('doapi_tokens', array());
+
+  $form[1] = array(
+    '#type' => 'fieldset',
+    '#title' => t('My DO tokens'),
+    '#weight' => 1,
+  );
+  $form[2] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Add new token'),
+    '#weight' => 2,
+  );
+  $form[3] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Display full response '),
+    '#weight' => 3,
+  );
+  $form[1]['actions'] = array('#type' => 'actions', '#weight' => 20);
+
+  if ($tokens) {
+    foreach ($tokens as $name => $token) {
+      $options[$name] = array(
+        'name' => $name,
+        'scope' => $token['scope'],
+        'default' => empty($token['default']) ? '' : t('default'),
+        'hint' => substr($token['value'], 0, 3) . '...' . substr($token['value'], -3, 3),
+      );
+    }
+    $header = array(
+      'name' => array('data' => t('Name'), 'field' => 'name'),
+      'default' => array('data' => 'Default', 'field' => 'default'),
+      'scope' => array('data' => t('Scope'), 'field' => 'scope'),
+      'hint' => array('data' => t('Hint'), 'field' => 'hint'),
+    );
+    $form[1]['token_list'] = array(
+      '#type' => 'tableselect',
+      '#header' => $header,
+      '#options' => $options,
+      '#weight' => 10,
+    );
+    $form[1]['actions']['delete'] = array(
+      '#type' => 'submit',
+      '#value' => t('Delete selected'),
+      '#submit' => array('doapi_delete_tokens'),
+      '#validate' => array('doapi_delete_tokens_validate'),
+    );
+    $form[1]['actions']['make_default'] = array(
+      '#type' => 'submit',
+      '#value' => t('Make default'),
+      '#submit' => array('doapi_set_default_token'),
+    );
+  }
+  else {
+    $form[1]['token_list'] = array('#markup' => '<p>' . t('There are no tokens yet.') . '</p>');
+  }
+
+  $form[2]['token_name'] = array(
+    '#type' => 'textfield',
+    '#title' => 'Token name',
+    '#weight' => 40,
+  );
+  $form[2]['scope'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Scope'),
+    '#options' => array('read' => 'read', 'write' => 'write',),
+    '#weight' => 50,
+  );
+  $form[2]['token_value'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Token value'),
+    '#weight' => 60,
+  );
+
+  $form[2]['new_token'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save token'),
+    '#submit' => array('doapi_add_new_token'),
+    '#validate' => array('doapi_add_new_token_validate'),
+    '#weight' => 70,
+  );
+  $form[3]['display_response'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Yes'),
+    '#default_value' => variable_get('doapi_display_response', ''),
+    '#weight' => 80,
+  );
+
+  $form[3]['confirm-response'] = array(
+    '#type' => 'submit',
+    '#value' => t('Confirm'),
+    '#submit' => array('doapi_display_response_submit'),
+    '#weight' => 90,
+  );
+  return $form;
+}
+
+/**
+ * Saves a setting to display/hide full HTTP response
+ * of api.digitalocean.com.
+ */
+function doapi_display_response_submit($form, &$form_state) {
+  if ($form_state['values']['display_response']) {
+    variable_set('doapi_display_response', 1);
+  }
+  else {
+    variable_set('doapi_display_response', '');
+  }
+}
+
+/**
+ * Action of doapi_settings form to save a token as default.
+ */
+function doapi_set_default_token($form, &$form_state) {
+
+  $tokens = variable_get('doapi_tokens', array());
+  foreach ($tokens as $name => $token) {
+    if (!empty($tokens[$name]['default'])) {
+      unset($tokens[$name]['default']);
+    }
+    if ($form_state['values']['token_list'][$name]) {
+      $default = $name;
+    }
+  }
+  if (!empty($default)) {
+    $tokens[$default]['default'] = 1;
+    variable_set('doapi_tokens', $tokens);
+    drupal_set_message(t('Default token is assigned.'));
+  }
+}
+
+/**
+ * Does noting currently.
+ */
+function doapi_delete_tokens_validate($form, &$form_state) {
+}
+
+/**
+ * Action of doapi_settings form to delete a token (locally).
+ */
+function doapi_delete_tokens($form, &$form_state) {
+  $tokens = variable_get('doapi_tokens', array());
+  foreach ($tokens as $name => $token) {
+    if ($form_state['values']['token_list'][$name] != '0') {
+      unset($tokens[$name]);
+    }
+  }
+  variable_set('doapi_tokens', $tokens);
+  drupal_set_message('Tokens deleted.');
+}
+
+/**
+ * Validates input before saving a new token.
+ */
+function doapi_add_new_token_validate($form, &$form_state) {
+  $tokens = variable_get('doapi_tokens', array());
+
+  if (array_key_exists($form_state['values']['token_name'], $tokens)) {
+    form_set_error('token_name', 'You have a token with the same name already');
+  }
+  if (array_key_exists($form_state['values']['token_value'], $tokens)) {
+    form_set_error('token_value', 'You have a token with the same value already');
+  }
+
+  if (empty($form_state['values']['token_name'])) {
+    form_set_error('token_name', t('Token name is required.'));
+  }
+  if (empty($form_state['values']['token_value'])) {
+    form_set_error('token_value', t('Token value is required.'));
+  }
+
+  if (!$form_state['values']['scope']['read'] && !$form_state['values']['scope']['write']) {
+    form_set_error('scope', t('Scope is required.'));
+  }
+
+  if (preg_match('/[^a-z0-9\._-]/i', $form_state['values']['token_name'])) {
+    form_set_error('token_name', t('Bad token name. Please use a-z0-9_-.'));
+  }
+  if (preg_match('/[^a-z0-9]/i', $form_state['values']['token_value'])) {
+    form_set_error('token_value', t('Bad token value'));
+  }
+}
+
+/**
+ * Save new token, see doapi_settings() form.
+ */
+function doapi_add_new_token($form, &$form_state) {
+  $tokens = variable_get('doapi_tokens', array());
+  $name = $form_state['values']['token_name'];
+  $tokens[$name]['value'] = $form_state['values']['token_value'];
+  if ($form_state['values']['scope']['read']) {
+    $scope[] = 'read';
+  }
+  if ($form_state['values']['scope']['write']) {
+    $scope[] = 'write';
+  }
+  $tokens[$name]['scope'] = implode(', ', $scope);
+  variable_set('doapi_tokens', $tokens);
+}
+
+/**
+ * Checks whether api.digitalocean.com HTTP responded
+ * with an error or success. Used in submodule do_api.
+ */
+function doapi_response_error($response) {
+  if (variable_get('doapi_display_response', '')) {
+    debug($response);
+  }
+  if (!empty($response->code) && $response->code >= 400) {
+    $data = json_decode($response->data);
+    drupal_set_message('DigitalOcean: ' . $data->message, 'error');
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * A helper function used in form constructors in submodules
+ * to add <select> html tag for choosing a token.
+ */
+function doapi_token_select() {
+  $tokens = variable_get('doapi_tokens', array());
+  $options = array();
+  foreach ($tokens as $name => $token) {
+    $options[$name] = $name;
+    if (!empty($token['default'])) {
+      $default = $name;
+    }
+  }
+  $out = array(
+    '#type' => 'select',
+    '#required' => TRUE,
+    '#field_prefix' => t('API token') . ': ',
+    '#field_suffix' => ' ',
+    '#options' => $options,
+  );
+  if (!empty($default)) {
+    $out['#default_value'] = $default;
+  }
+  if ( !empty($_GET['doapi_token']) && array_key_exists($_GET['doapi_token'], $tokens)) {
+    $out['#default_value'] = $_GET['doapi_token'];
+  }
+  return $out;
+}
+
+/**
+ * Form for submitting containing only token.
+ */
+function doapi_token_select_form($form, &$form_state) {
+  $tokens = variable_get('doapi_tokens', array());
+  $form[1] =  array(
+    '#type' => 'fieldset',
+  );
+  $form[1]['#attributes']['class'] = array('container-inline minified');
+
+  $form[1]['doapi_token'] = doapi_token_select();
+  $form['#method'] = 'GET';
+  $form[1]['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Apply selected'),
+  );
+  return $form;
+}
+
+/**
+ * Renders the doapi_token_select_form(),
+ * used in DNS submodule, see doapi_dns_list_domains().
+ */
+function doapi_token_render_select_form() {
+  $form = drupal_get_form('doapi_token_select_form');
+  return render($form);
+}
+
+/**
+ * Returns a token value by a given name,
+ * by a name given in URL, or the default token value
+ * if a name isn't found. Used DNS submodule.
+ */
+function doapi_token_value($name = '') {
+  $tokens = variable_get('doapi_tokens', array());
+  if (!empty($tokens[$name]['value'])) {
+    return $tokens[$name]['value'];
+  }
+  if ( !empty($_GET['doapi_token']) && array_key_exists($_GET['doapi_token'], $tokens)) {
+    return $tokens[$_GET['doapi_token']]['value'];
+  }
+  foreach ($tokens as $name => $token) {
+    if (!empty($token['default'])) {
+      return $tokens[$name]['value'];
+    }
+  }
+  return FALSE;
+}

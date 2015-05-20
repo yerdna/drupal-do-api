@@ -1,0 +1,10 @@
+name = DigitalOcean DNS API
+description = Manage domain records for domains served on DigitalOcean nameservers. Uses REST API described on https://developers.digitalocean.com/documentation/v2/#domains
+core = 7.x
+package = custom
+dependencies[] = doapi
+
+files[] = doapi_dns.module
+configure = doapi/dns
+
+version = "7.x-1.x"
